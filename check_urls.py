@@ -30,7 +30,6 @@ logging.basicConfig(
 )
 
 CACHE_FILE = 'cache.txt'
-RESULTS_FILE = 'results.json'
 # Number of recent requests to consider for rate calculation
 RATE_WINDOW = 10
 # Rate thresholds for detecting slowdown and recovery
@@ -269,16 +268,6 @@ def parse_page_content(html_content):
     return data
 
 
-def save_results(results):
-    """Save results to JSON file."""
-    try:
-        with open(RESULTS_FILE, 'w', encoding='utf-8') as f:
-            json.dump(results, f, ensure_ascii=False, indent=2)
-        logging.info(f"Results saved to {RESULTS_FILE}")
-    except Exception as e:
-        logging.error(f"Error saving results: {str(e)}")
-
-
 def check_url(url, cache, driver):
     # Check if URL is already in cache
     if url in cache:
@@ -340,11 +329,11 @@ def increment_url_number(base_url, start_number, end_number, max_workers=10):
 
     # Create a list of URLs to check
     urls_to_check = []
-    numbers_checked = 0
 
     # Keep checking numbers until we hit our target count
     current_number = start_number
-    while numbers_checked < (end_number - start_number):
+    numbers_to_check = end_number - start_number + 1
+    while len(urls_to_check) < numbers_to_check:
         new_path = f"{base_path}/{current_number}"
         new_url = urlunparse((
             parsed_url.scheme,
@@ -355,31 +344,35 @@ def increment_url_number(base_url, start_number, end_number, max_workers=10):
             parsed_url.fragment
         ))
 
+        current_number += 1
         # If URL is in cache, skip it
         if new_url in cache:
-            current_number += 1
             continue
-
         # If not in cache, add to check list
         urls_to_check.append(new_url)
-        numbers_checked += 1
-        current_number += 1
 
     if not urls_to_check:
         logging.info("All numbers in range are already in cache")
         return []
 
-    logging.info(f"Found {len(urls_to_check)} new URLs to check")
+    logging.info(f"Found {len(urls_to_check)} new URLs to check: from={urls_to_check[0]} to={urls_to_check[-1]}")
 
-    # Create a WebDriver for each thread
+    # Create a pool of WebDrivers
     drivers = [setup_driver() for _ in range(max_workers)]
+    driver_index = 0
+
+    def worker(url):
+        nonlocal driver_index
+        # Get a driver from the pool using thread-safe indexing
+        with threading.Lock():
+            current_driver = drivers[driver_index]
+            driver_index = (driver_index + 1) % max_workers
+        return check_url(url, cache, current_driver)
 
     try:
         # Use ThreadPoolExecutor to check URLs concurrently
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
-            results = list(executor.map(
-                lambda args: check_url(args[0], cache, args[1]),
-                zip(urls_to_check, drivers)))
+            results = list(executor.map(worker, urls_to_check))
     finally:
         # Clean up WebDrivers
         for driver in drivers:
@@ -387,12 +380,6 @@ def increment_url_number(base_url, start_number, end_number, max_workers=10):
                 driver.quit()
             except:
                 pass
-
-    # Filter and save results
-    valid_results = {url: result['data'] for url, result in zip(urls_to_check, results)
-                     if result['status'] == 'R' and result['data'] is not None}
-    if valid_results:
-        save_results(valid_results)
 
     return results
 
@@ -411,10 +398,14 @@ def parse_args():
 
 def main():
     args = parse_args()
+    print(args)
+    assert args.number > 0, "number must be greater than 0"
+    assert args.start >= 0, "start must be greater than or equal to 0"
+    assert args.workers > 0, "workers must be greater than 0"
 
     base_url = "https://www.wybory.gov.pl/prezydent2025/pl/obkw/2/1467396"
     start_number = args.start
-    end_number = start_number + args.number
+    end_number = start_number + args.number - 1
 
     logging.info(
         f"Starting URL check from {start_number} to {end_number} (checking {args.number} entries)")

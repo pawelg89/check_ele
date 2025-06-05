@@ -198,3 +198,4 @@ cython_debug/
 cache.txt
 results.json
 url_check.log
+page_*.html
